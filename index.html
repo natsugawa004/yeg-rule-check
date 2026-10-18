@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 入力した文章や判定結果を外部へ送らないため、ページからの通信・フォーム送信を禁止する -->
+  <meta http-equiv="Content-Security-Policy" content="connect-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; worker-src 'none'">
+  <meta http-equiv="x-dns-prefetch-control" content="off">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>YEG 記載ルールチェッカー</title>
+  <link rel="icon" href="favicon.svg?v=20261018-1949" type="image/svg+xml">
+  <link rel="stylesheet" href="css/style.css?v=20261018-1949">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <h1 class="site-title">YEG 記載ルールチェッカー</h1>
+      <p class="site-lead">理事会に上程する資料の書き方（表記・数字・日付・文体）を、マニュアルのルールで確認します。</p>
+      <div class="notice" id="notice">
+        <p class="notice-item notice-disclaimer">機械的な判定のため、誤検知や見逃しがあります。最終判断は委員会で行ってください。</p>
+        <p class="notice-item">入力した文章はこの端末の中だけで判定し、外部に送信・保存しません。</p>
+        <p class="notice-item notice-version">基準: <span id="manual-name">理事会上程資料の書き方</span>（<span id="manual-version"></span>）／ルール定義の更新日: <span id="rules-updated"></span></p>
+      </div>
+      <p class="header-actions"><button type="button" class="btn btn-link" id="btn-rules-top">このツールが確認するルール</button></p>
+      <div id="rule-errors" class="rule-errors" role="alert" hidden></div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="input-section" aria-labelledby="input-heading">
+      <h2 id="input-heading" class="visually-hidden">文章の入力</h2>
+      <p class="steps" id="steps">
+        <span class="step">①文章を貼る</span>
+        <span class="step-arrow" aria-hidden="true">→</span>
+        <span class="step">②チェックする</span>
+        <span class="step-arrow" aria-hidden="true">→</span>
+        <span class="step">③赤い指摘から直す</span>
+      </p>
+      <div class="file-area">
+        <div class="file-row">
+          <button type="button" class="btn btn-file" id="btn-file">ファイルを選ぶ</button>
+          <p class="file-lead">Word（.docx）・Excel（.xlsx）・PDF をそのまま読み込めます。画面にドラッグしても読み込めます。【基本】【実施内容】【収支書】など、複数のファイル（10ファイルまで）をまとめて選べます。</p>
+        </div>
+        <p class="file-tip" id="file-tip">Excel（.xlsx）のまま読み込むと、空欄と金額もチェックできます</p>
+        <input type="file" id="file-input" class="file-input" tabindex="-1" aria-hidden="true" multiple>
+      </div>
+      <div class="file-panel" id="file-panel" hidden>
+        <p class="file-name"><span class="file-format" id="file-format"></span><span id="file-name"></span></p>
+        <p class="file-note">ファイルから読み込んだ文章は、この画面では直せません。直す場合は元のファイル（Word・Excel）を修正して、もう一度読み込んでください。</p>
+        <div class="file-units" id="file-units"></div>
+        <ul class="file-notes" id="file-notes" hidden></ul>
+        <p class="file-panel-actions"><button type="button" class="btn btn-small" id="btn-to-paste">貼り付け欄に切り替える</button></p>
+      </div>
+      <div class="paste-area" id="paste-area">
+        <label for="input" class="input-label">議案の文章</label>
+        <textarea id="input" class="input" autocomplete="off" spellcheck="false" placeholder="ここに議案の文章を貼り付けてください"></textarea>
+      </div>
+      <p class="char-count" id="char-count" aria-live="polite">入力文字数: 0字</p>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="btn-check">チェックする</button>
+        <button type="button" class="btn" id="btn-sample">例文で試す</button>
+        <button type="button" class="btn" id="btn-clear">クリア</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite" hidden></p>
+    </section>
+
+    <section class="results" id="results" aria-label="判定結果" hidden>
+      <div class="summary" id="summary" tabindex="-1"></div>
+
+      <!-- 金額チェック（収支予算書・決算書）: 読み取った収支表と結果 -->
+      <section class="amount-area" id="amount-area" aria-labelledby="amount-title" hidden></section>
+
+      <div class="tabs" role="tablist" aria-label="結果の表示">
+        <button type="button" class="tab" role="tab" id="tab-list" aria-controls="pane-list" aria-selected="true">指摘一覧</button>
+        <button type="button" class="tab" role="tab" id="tab-body" aria-controls="pane-body" aria-selected="false">本文</button>
+        <button type="button" class="tab" role="tab" id="tab-doc" aria-controls="pane-doc" aria-selected="false">必須項目</button>
+      </div>
+
+      <div class="panes" id="panes" data-tab="list">
+        <div class="panes-main">
+        <section class="pane pane-body" id="pane-body" role="tabpanel" aria-labelledby="tab-body">
+          <h2 class="pane-title">本文</h2>
+          <p class="pane-note" id="body-note">チェックした文章です。印を押すと指摘の内容が出ます。直すときは上の入力欄で直して、もう一度「チェックする」を押してください。</p>
+          <div class="legend" aria-hidden="true">
+            <span class="hl hl-violation">違反</span>
+            <span class="hl hl-check">要確認</span>
+            <span class="hl hl-info">参考</span>
+            <span class="hl hl-sentence">文体</span>
+          </div>
+          <div class="body-view" id="body-view"></div>
+        </section>
+
+        <section class="pane pane-list" id="pane-list" role="tabpanel" aria-labelledby="tab-list">
+          <h2 class="pane-title">指摘一覧</h2>
+          <div class="list-controls">
+            <div class="control-row" role="group" aria-label="並べ方">
+              <span class="control-label">並べ方</span>
+              <button type="button" class="chip" id="group-rule" aria-pressed="true">ルールごとにまとめる</button>
+              <button type="button" class="chip" id="group-position" aria-pressed="false">文章に出てくる順</button>
+            </div>
+            <div class="control-row" role="group" aria-label="重さで絞り込む">
+              <span class="control-label">表示</span>
+              <button type="button" class="chip" data-filter="all" aria-pressed="true">すべて</button>
+              <button type="button" class="chip" data-filter="違反" aria-pressed="false">違反だけ</button>
+              <button type="button" class="chip" data-filter="要確認" aria-pressed="false">要確認だけ</button>
+              <button type="button" class="chip" data-filter="参考" aria-pressed="false">参考だけ</button>
+            </div>
+            <div class="control-row">
+              <button type="button" class="btn" id="btn-copy-list">指摘一覧をコピー</button>
+            </div>
+          </div>
+          <div class="finding-list" id="finding-list"></div>
+          <div class="ignored-area" id="ignored-area" hidden>
+            <button type="button" class="btn btn-link" id="btn-toggle-ignored" aria-expanded="false"></button>
+            <div class="finding-list ignored-list" id="ignored-list" hidden></div>
+          </div>
+        </section>
+        </div>
+
+        <section class="pane pane-doc" id="pane-doc" role="tabpanel" aria-labelledby="tab-doc" tabindex="-1">
+          <h2 class="pane-title">書類の種類・必須項目・確認ポイント</h2>
+          <div class="doc-view" id="doc-view"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="ai-guide" aria-label="AIでも確認したい方へ">
+      <details id="ai-guide">
+        <summary>AIでも確認したい方へ</summary>
+        <div class="ai-guide-body">
+          <p class="ai-caution" id="ai-caution"></p>
+          <p>このツールは、AIサービスとはつながっていません。使う場合は次の順に進めてください。</p>
+          <ol class="ai-steps">
+            <li>「AIへの依頼文をコピー」を押す（ルールの要約と依頼の文がコピーされます。入力欄の文章は入りません）</li>
+            <li>下のAIサービスを開き、コピーした依頼文を貼り付ける</li>
+            <li>続けて、個人名・電話番号などを伏せた文章を貼り付ける</li>
+          </ol>
+          <p><button type="button" class="btn" id="btn-copy-prompt">AIへの依頼文をコピー</button></p>
+          <ul class="ai-links" id="ai-links"></ul>
+        </div>
+      </details>
+    </section>
+
+    <p class="bottom-actions"><button type="button" class="btn btn-link" id="btn-rules-bottom">このツールが確認するルール</button></p>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>機械的な判定のため、誤検知や見逃しがあります。最終判断は委員会で行ってください。</p>
+      <p>入力した文章はこの端末の中だけで判定し、外部に送信・保存しません。ページを閉じる・再読み込みすると消えます。</p>
+    </div>
+  </footer>
+
+  <dialog class="rules-dialog" id="rules-dialog" aria-labelledby="rules-title">
+    <div class="dialog-head">
+      <h2 id="rules-title">このツールが確認するルール</h2>
+      <button type="button" class="btn" id="btn-rules-close">閉じる</button>
+    </div>
+    <div class="dialog-body" id="rules-body"></div>
+  </dialog>
+
+  <div class="sheet" id="detail-sheet" role="dialog" aria-label="指摘の内容" hidden>
+    <div class="sheet-head">
+      <span class="sheet-title">指摘の内容</span>
+      <button type="button" class="btn" id="btn-sheet-close">閉じる</button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="drop-overlay" id="drop-overlay" aria-hidden="true" hidden>
+    <p class="drop-message">ここでファイルを離すと読み込みます（Word・Excel・PDF。10ファイルまで）</p>
+  </div>
+
+  <script src="rules/rules.js?v=20261018-1949"></script>
+  <script src="js/sample.js?v=20261018-1949"></script>
+  <script src="js/engine.js?v=20261018-1949"></script>
+  <script src="js/report.js?v=20261018-1949"></script>
+  <script src="js/xml.js?v=20261018-1949"></script>
+  <script src="js/zip.js?v=20261018-1949"></script>
+  <script src="js/ooxml.js?v=20261018-1949"></script>
+  <script src="js/numfmt.js?v=20261018-1949"></script>
+  <script src="js/docx.js?v=20261018-1949"></script>
+  <script src="js/xlsx.js?v=20261018-1949"></script>
+  <script src="js/pdfread.js?v=20261018-1949"></script>
+  <script src="js/fileload.js?v=20261018-1949"></script>
+  <script src="js/doccheck.js?v=20261018-1949"></script>
+  <script src="js/amount.js?v=20261018-1949"></script>
+  <script src="js/pipeline.js?v=20261018-1949"></script>
+  <script src="js/app.js?v=20261018-1949"></script>
+  <!-- PDF の読み取り部品（pdf.js）。ページを開いたときに読み込んでおき、通信を切った後でも PDF を読めるようにする -->
+  <script src="vendor/pdfjs/pdf.min.js?v=20261018-1949"></script>
+  <script src="vendor/pdfjs/pdf.worker.min.js?v=20261018-1949"></script>
+  <script src="vendor/pdfjs/cmaps_ja.js?v=20261018-1949"></script>
+</body>
+</html>
