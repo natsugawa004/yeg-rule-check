@@ -139,17 +139,24 @@
    * @property {RequiredReport} report
    * @property {{ typeId: string, files: string[] }[]} groups  種類ごとに使ったファイル
    * @property {DocAnalysis} analysis        すべてを合わせた分析
+   * @property {StructureView|null} structure  委員会事業計画書の委員会名と字数（その種類を選んでいないときは null）
    */
 
   const g = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (root));
   const engine = /** @type {{ MAX_CHARS: number, countChars: (s: string) => number,
-   *   checkText: (t: string, rs: unknown, o?: { breaks?: readonly number[], sections?: readonly { start: number, end: number, name: string }[] }) => CheckOk|CheckNg,
-   *   checkDocumentRules: (t: string, rs: unknown, typeIds: readonly string[]) => Finding[] }} */ (g.YegEngine);
+   *   checkText: (t: string, rs: unknown, o?: { breaks?: readonly number[], sections?: readonly { start: number, end: number, name: string }[], documentTypes?: readonly string[] }) => CheckOk|CheckNg,
+   *   checkDocumentRules: (t: string, rs: unknown, typeIds: readonly string[]) => Finding[],
+   *   withDynamicWords: (rs: Ruleset, kind: string, words: readonly string[]) => Ruleset }} */ (g.YegEngine);
   const docCheck = /** @type {{ analyzeDocument: (input: { format: Format, text: string, composed: Composed|null, units: readonly Unit[]|null }, rs: unknown) => DocAnalysis,
    *   mergeAnalyses: (list: readonly DocAnalysis[]) => DocAnalysis,
    *   requiredReport: (a: DocAnalysis, s: Selection, rs: unknown, byType?: Readonly<Record<string, DocAnalysis>>) => RequiredReport }} */ (g.YegDocCheck);
   const fileApi = /** @type {{ composeFiles: (files: readonly { key: string, units: readonly Unit[], included: ReadonlySet<string> }[]) => { composed: Composed, parts: { key: string, start: number, end: number, composed: Composed }[] },
    *   locate: (c: Composed, offset: number) => Span|null, locationLabel: (loc: Loc) => string }} */ (g.YegFile);
+  const annualApi = /** @type {{ committeeNames: (text: string, type: unknown) => string[],
+   *   adjustFindings: (f: readonly Finding[], regions: readonly { start: number, end: number, typeIds: string[], hasScope: boolean }[], rs: unknown) => Finding[],
+   *   bodyParagraphs: (text: string, sections: readonly { start: number, end: number, name: string }[], name: string) => { start: number, end: number, text: string }[],
+   *   layout: (paragraphs: readonly { text: string }[], params: Readonly<Record<string, unknown>>) => Layout|null,
+   *   structureFindings: (paragraphs: readonly { text: string }[], typeId: string, rs: unknown) => Finding[] }} */ (g.YegAnnual);
   const amountApi = /** @type {{ MESSAGES: Readonly<Record<string, unknown>>, readSheet: (sheet: unknown, data: unknown) => SheetRead,
    *   hasSettlementAmount: (t: unknown) => boolean, finalize: (t: unknown, kind: BudgetKind) => { ok: true, table: unknown } | { ok: false, reasons: string[] },
    *   checkTable: (t: unknown, kind: BudgetKind, rules: readonly unknown[], data: unknown) => Issue[],
@@ -157,8 +164,15 @@
 
   /**
    * ルール定義（engine.js の CompiledRuleset。使う項目だけ）
-   * @typedef {{ documents: { types: { id: string }[] }|null, amounts: { documentType: string, replaces: { documentRules: string[], cellRules: string[] } }|null,
-   *   rules: { id: string, type: string, order: number }[] }} Ruleset
+   * @typedef {{ id: string, name: string, scopeSections: string[], committeeNamePattern: RegExp|null }} DocTypeLike
+   * @typedef {{ documents: { types: DocTypeLike[] }|null, amounts: { documentType: string, replaces: { documentRules: string[], cellRules: string[] } }|null,
+   *   rules: { id: string, type: string, order: number, check: string, documentTypes: string[], dynamicWords: string, params: Readonly<Record<string, unknown>> }[] }} Ruleset
+   */
+  /** @typedef {{ label: string, chars: number, target: number, status: 'ok'|'short'|'long' }} LayoutRow */
+  /** @typedef {{ split: boolean, rows: LayoutRow[], total: LayoutRow }} Layout */
+  /**
+   * 委員会事業計画書の構成（付録G）
+   * @typedef {{ typeId: string, typeName: string, committeeName: string, layout: Layout|null }} StructureView
    */
 
   const MESSAGES = Object.freeze({
@@ -431,9 +445,69 @@
         if (!replacedDocs.has(id) && !byRule.has(id)) byRule.set(id, f);
       }
     }
-    const documentFindings = [...byRule.values()]
-      .sort((a, b) => a.reasons[0].order - b.reasons[0].order)
-      .map((f, i) => ({ ...f, id: `d-${i + 1}` }));
+    // 書類の種類に応じた文章ルールの扱い（付録G。委員会事業計画書は判定する欄を絞り、議案のルールを外す・下げる）
+    const typeById = new Map((ruleset.documents ? ruleset.documents.types : []).map((t) => [t.id, t]));
+    const regions = prep.parts.map((p) => {
+      const typeIds = groups.filter((grp) => grp.parts.includes(p)).map((grp) => grp.typeId);
+      const scope = typeIds.flatMap((id) => typeById.get(id)?.scopeSections ?? []);
+      return { start: p.start, end: p.end, typeIds, hasScope: scope.length > 0 && p.analysis.sections.some((s) => scope.includes(s.name)) };
+    });
+    // 書類の種類を決めているルール（委員会事業計画書の用語 Y-01〜Y-05 など）は、その種類の範囲だけで判定する。
+    // 見出しから読み取った自分の委員会名（Y-03。入力から語を読み取るルール）もここで判定する
+    /** @type {Finding[]} */
+    const typedFindings = [];
+    /** @type {Map<Part, string[]>} */
+    const namesByPart = new Map();
+    prep.parts.forEach((p, i) => {
+      const typeIds = regions[i].typeIds;
+      if (typeIds.length === 0) return;
+      const forTypes = (/** @type {{ documentTypes: string[] }} */ r) => r.documentTypes.some((id) => typeIds.includes(id));
+      const partText = prep.text.slice(p.start, p.end);
+      const t = typeIds.map((id) => typeById.get(id)).find((x) => x && x.committeeNamePattern);
+      const names = t ? annualApi.committeeNames(partText, t) : [];
+      if (t) namesByPart.set(p, names);
+      const rules = [
+        ...ruleset.rules.filter((r) => r.type === 'pattern' && r.dynamicWords === '' && forTypes(r)),
+        ...engine.withDynamicWords(ruleset, 'committeeName', names).rules.filter(forTypes),
+      ];
+      if (rules.length === 0) return;
+      const r = engine.checkText(
+        partText,
+        { ...ruleset, rules },
+        { breaks: p.composed ? p.composed.breaks : [], sections: p.analysis.sections, documentTypes: typeIds },
+      );
+      if (!r.ok) return;
+      for (const f of r.findings) {
+        typedFindings.push({ ...f, id: `y-${typedFindings.length + 1}`, range: f.range ? { start: f.range.start + p.start, end: f.range.end + p.start } : null });
+      }
+    });
+
+    // 構成のチェック（字数・書き出し・締め）と、字数の表
+    /** @type {Finding[]} */
+    const structureFindings = [];
+    /** @type {StructureView|null} */
+    let structure = null;
+    for (const grp of groups) {
+      const t = typeById.get(grp.typeId);
+      const checks = ruleset.rules.filter((r) => r.type === 'document' && r.check !== '' && r.documentTypes.includes(grp.typeId));
+      if (!t || checks.length === 0) continue;
+      const lengthRule = checks.find((r) => r.check === 'length');
+      const sectionName =
+        lengthRule && typeof lengthRule.params.section === 'string' ? lengthRule.params.section : (t.scopeSections[0] ?? '');
+      const part = grp.parts.find((p) => p.analysis.sections.some((s) => s.name === sectionName)) ?? grp.parts[0];
+      const paragraphs = annualApi.bodyParagraphs(prep.text.slice(part.start, part.end), part.analysis.sections, sectionName);
+      structureFindings.push(...annualApi.structureFindings(paragraphs, grp.typeId, ruleset));
+      structure = structure ?? {
+        typeId: grp.typeId,
+        typeName: t.name,
+        committeeName: (namesByPart.get(part) ?? [])[0] ?? '',
+        layout: lengthRule ? annualApi.layout(paragraphs, lengthRule.params) : null,
+      };
+    }
+
+    const documentFindings = [...[...byRule.values()].sort((a, b) => a.reasons[0].order - b.reasons[0].order), ...structureFindings].map(
+      (f, i) => ({ ...f, id: `d-${i + 1}` }),
+    );
 
     // 必須項目（同じ種類のファイルは合わせて1つの書類として判定する）
     /** @type {Record<string, DocAnalysis>} */
@@ -449,14 +523,23 @@
     }
     const analysis = docCheck.mergeAnalyses(prep.parts.map((p) => p.analysis));
 
+    const textFindings = annualApi
+      .adjustFindings(
+        [...withoutReplaced(prep.result.findings, amount.cellRanges, new Set(replaces.cellRules)), ...typedFindings],
+        regions,
+        ruleset,
+      )
+      .sort((a, b) => (a.range ? a.range.start : -1) - (b.range ? b.range.start : -1));
+
     return {
-      textFindings: withoutReplaced(prep.result.findings, amount.cellRanges, new Set(replaces.cellRules)),
+      textFindings,
       documentFindings,
       amountFindings: amount.findings,
       amount: amount.view,
       report: docCheck.requiredReport(analysis, selection, ruleset, byType),
       groups: groups.map((grp) => ({ typeId: grp.typeId, files: grp.parts.map((p) => p.name).filter((n) => n !== '') })),
       analysis,
+      structure,
     };
   };
 

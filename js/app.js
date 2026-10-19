@@ -1243,6 +1243,61 @@
             rep.notes.length > 0 ? h('ul', { className: 'doc-notes' }, rep.notes.map((n) => h('li', { text: n }))) : null,
           ]);
 
+    // 委員会事業計画書: 見出しから読み取った委員会名と、上段・中段・下段の字数（付録G）
+    const st = ev.structure;
+    const layoutRows = st && st.layout ? [...st.layout.rows, st.layout.total] : [];
+    const structureSection = st
+      ? h('section', { className: 'doc-block doc-structure', attrs: { 'aria-labelledby': 'doc-structure-title' } }, [
+          h('h3', { className: 'doc-title', attrs: { id: 'doc-structure-title' } }, [
+            '構成と字数',
+            h('span', { className: 'doc-how', text: `（${st.typeName}）` }),
+          ]),
+          h('p', {
+            className: 'doc-note',
+            text: st.committeeName
+              ? `委員会名: ${st.committeeName}（見出しから読み取り、本文で使っていれば「当委員会」と書くよう知らせます）`
+              : '委員会名: 見出しの「〇〇委員会　委員長名」の行が見つからないため、読み取れませんでした',
+          }),
+          layoutRows.length > 0
+            ? h('div', { className: 'req-table-wrap' }, [
+                h('table', { className: 'req-table layout-table' }, [
+                  h('caption', { text: '「委員会活動の目的・抱負」の字数（空白・改行は数えません）' }),
+                  h('thead', {}, [
+                    h('tr', {}, [
+                      h('th', { text: '段', attrs: { scope: 'col' } }),
+                      h('th', { text: '字数', attrs: { scope: 'col' } }),
+                      h('th', { text: '目安', attrs: { scope: 'col' } }),
+                    ]),
+                  ]),
+                  h(
+                    'tbody',
+                    {},
+                    layoutRows.map((r) =>
+                      h('tr', { attrs: { 'data-status': r.status } }, [
+                        h('th', { text: r.label, attrs: { scope: 'row' } }),
+                        h('td', {}, [
+                          h('span', {
+                            // 必須項目の表と同じ色（○ 目安の範囲／△ 目安から外れている）
+                            className: `req-status ${r.status === 'ok' ? 'st-ok' : 'st-blank'}`,
+                            text: `${r.chars}字${r.status === 'short' ? '（少なめ）' : r.status === 'long' ? '（多め）' : ''}`,
+                          }),
+                        ]),
+                        h('td', { text: `${r.target}字` }),
+                      ]),
+                    ),
+                  ),
+                ]),
+              ])
+            : null,
+          st.layout && !st.layout.split
+            ? h('p', { className: 'doc-note', text: '段落が3つ未満のため、上段・中段・下段に分けず合計の字数だけを見ています。' })
+            : null,
+          st.layout
+            ? null
+            : h('p', { className: 'doc-note', text: '「委員会活動の目的・抱負」の本文が空のため、字数と構成は確かめていません。' }),
+        ])
+      : null;
+
     const groups = docCheck.checkpointGroups(sel, ruleset, new Set(ev.amount.checkedRules));
     const pointSection = h('section', { className: 'doc-block doc-points', attrs: { 'aria-labelledby': 'doc-points-title' } }, [
       h('h3', { className: 'doc-title', attrs: { id: 'doc-points-title' } }, [
@@ -1281,7 +1336,7 @@
       ]),
     ]);
 
-    els.docView.replaceChildren(...compact([typeSection, filesSection, requiredSection, pointSection]));
+    els.docView.replaceChildren(...compact([typeSection, filesSection, requiredSection, structureSection, pointSection]));
     if (focusDocId) {
       const target = document.getElementById(focusDocId);
       if (target) {

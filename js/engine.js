@@ -55,10 +55,12 @@
    * @property {string} scope
    * @property {number} order
    * @property {Readonly<Record<string, SectionSeverity>>|null} sectionSeverity  欄に応じた重さ（「ほかの欄」は名前のない欄）
-   * @property {string[]} documentTypes  type: 'document' の対象の書類の種類
+   * @property {string[]} documentTypes  type: 'document' の対象の書類の種類。type: 'pattern' でも書けて、そのときはこの種類の書類だけに当てる（空なら全部）
+   * @property {string} dynamicWords  type: 'pattern' で、見つける語を入力から読み取るもの（DYNAMIC_WORDS のどれか。'' なら使わない）
    * @property {DocumentCondition|null} condition
    * @property {string} message  type: 'document' の指摘の文
-   * @property {string} check    type: 'amount' の計算の名前（AMOUNT_CHECKS のどれか）
+   * @property {string} check    type: 'amount' の計算の名前（AMOUNT_CHECKS のどれか）。type: 'document' で condition の代わりに使う構成のチェック（DOCUMENT_CHECKS のどれか）
+   * @property {Readonly<Record<string, unknown>>} params  type: 'document' の構成のチェックに使う値（字数の目安など）
    * @property {Readonly<Record<string, string>>} messages  type: 'amount' の指摘の文（言い分けがあるときは名前ごと。1つなら default）
    */
 
@@ -80,6 +82,10 @@
    * @property {string[]} settlementRequired  決算のときだけ必須
    * @property {string[]} blankCheck
    * @property {Checkpoint[]} checkpoints
+   * @property {boolean} useCommonCheckpoints  共通の確認ポイントも出すか（委員会事業計画書は議案向けの共通の確認ポイントを出さない）
+   * @property {string[]} scopeSections  判定する欄（この種類の書類では、ここに書いた欄の中の指摘だけを出す。空なら全部）
+   * @property {{ off: string[], lower: boolean }} textRules  文章のルールの扱い（off: 当てないルール、lower: 「違反」を「要確認」に下げる）
+   * @property {RegExp|null} committeeNamePattern  見出しから自分の委員会名を読み取る正規表現（1番目のかっこが委員会名）
    */
 
   /**
@@ -601,6 +607,39 @@
     'thousands',
   ]);
 
+  /** 書類全体の構成のチェックの名前（type: 'document' で condition の代わりに check に書けるもの。判定は annual.js） */
+  const DOCUMENT_CHECKS = Object.freeze(['length', 'opening', 'closing']);
+
+  /** 入力から読み取る語の名前（type: 'pattern' の dynamicWords に書けるもの） */
+  const DYNAMIC_WORDS = Object.freeze(['committeeName']);
+
+  /**
+   * 構成のチェックの params の書き間違い（なければ null）
+   * @param {string} check
+   * @param {Record<string, unknown>} params
+   * @returns {string|null}
+   */
+  const checkParamsError = (check, params) => {
+    if (params.section !== undefined && !isNonEmptyString(params.section)) return "params.section（本文の欄の名前）は '…' の形で書いてください";
+    if (check === 'length') {
+      const parts = params.parts;
+      const okParts =
+        Array.isArray(parts) &&
+        parts.length === 3 &&
+        parts.every((p) => isObject(p) && isNonEmptyString(p.label) && typeof p.target === 'number' && p.target > 0);
+      if (!okParts) return "params.parts は上段・中段・下段の3つを [{ label: '上段', target: 200 }, …] の形で書いてください";
+      for (const key of ['total', 'low', 'high']) {
+        const v = params[key];
+        if (v !== undefined && !(typeof v === 'number' && v > 0)) return `params.${key} は 0 より大きい数で書いてください`;
+      }
+    }
+    if (check === 'opening' && !isNonEmptyString(params.opening)) return "params.opening（中段の書き出し）は '…' の形で書いてください";
+    if (check === 'closing' && !(isStringArray(params.closings) && params.closings.some(isNonEmptyString))) {
+      return "params.closings（締めの言葉）は ['…'] の形で書いてください";
+    }
+    return null;
+  };
+
   /**
    * 指摘の文（文字列1つ、または { 名前: 文 }）
    * @param {unknown} raw
@@ -736,6 +775,30 @@
       }
       const checkpoints = compileCheckpoints(t.checkpoints, `${label}の checkpoints `);
       if (!checkpoints.ok) return checkpoints;
+      if (t.commonCheckpoints !== undefined && typeof t.commonCheckpoints !== 'boolean') {
+        return { ok: false, message: `${label}の commonCheckpoints は true か false で書いてください` };
+      }
+      if (t.scopeSections !== undefined && !isStringArray(t.scopeSections)) {
+        return { ok: false, message: `${label}の scopeSections は ['…'] の形で書いてください` };
+      }
+      const tr = t.textRules === undefined ? {} : t.textRules;
+      if (!isObject(tr) || (tr.off !== undefined && !isStringArray(tr.off)) || (tr.lower !== undefined && typeof tr.lower !== 'boolean')) {
+        return { ok: false, message: `${label}の textRules は { off: ['R-01'], lower: true } の形で書いてください` };
+      }
+      /** @type {RegExp|null} */
+      let committeeNamePattern = null;
+      if (t.committeeNamePattern !== undefined) {
+        const re = isNonEmptyString(t.committeeNamePattern)
+          ? compileRegex(t.committeeNamePattern, `${label}の committeeNamePattern `)
+          : { ok: /** @type {false} */ (false), message: `${label}の committeeNamePattern は '…' の形で書いてください` };
+        if (!re.ok) return re;
+        // 委員会名は1番目のかっこで受け取るので、かっこがないと読み取れない
+        const groups = new RegExp(`${re.value.source}|`, 'u').exec('');
+        if (!groups || groups.length < 2) {
+          return { ok: false, message: `${label}の committeeNamePattern に、委員会名を受け取るかっこ ( ) を書いてください` };
+        }
+        committeeNamePattern = re.value;
+      }
       types.push({
         id: String(t.id),
         name: String(t.name),
@@ -744,6 +807,10 @@
         settlementRequired: isStringArray(t.settlementRequired) ? t.settlementRequired : [],
         blankCheck: /** @type {string[]} */ (t.blankCheck),
         checkpoints: checkpoints.value,
+        useCommonCheckpoints: t.commonCheckpoints !== false,
+        scopeSections: isStringArray(t.scopeSections) ? t.scopeSections : [],
+        textRules: { off: isStringArray(tr.off) ? tr.off : [], lower: tr.lower === true },
+        committeeNamePattern,
       });
     }
     const common = compileCheckpoints(raw.commonCheckpoints, 'documents.commonCheckpoints ');
@@ -869,8 +936,11 @@
     /** @type {string[]} */
     let documentTypes = [];
     let check = '';
+    let dynamicWords = '';
     /** @type {Readonly<Record<string, string>>} */
     let messages = Object.freeze({});
+    /** @type {Readonly<Record<string, unknown>>} */
+    let params = Object.freeze({});
     if (type === 'style') {
       const s = compileStyle(raw.style);
       if (!s.ok) return s;
@@ -887,16 +957,43 @@
       if (!isStringArray(raw.documentTypes) || raw.documentTypes.length === 0) {
         return { ok: false, message: "対象の書類の種類（documentTypes）を ['plan'] の形で書いてください" };
       }
-      if (!isNonEmptyString(raw.message)) return { ok: false, message: '指摘の文（message）が書かれていません' };
-      const c = compileCondition(raw.condition);
-      if (!c.ok) return c;
-      condition = c.value;
+      if (raw.check !== undefined) {
+        // 構成のチェック（字数・書き出し・締め。委員会事業計画書）。条件の代わりに check と params を書く
+        if (!(typeof raw.check === 'string' && DOCUMENT_CHECKS.includes(raw.check))) {
+          return { ok: false, message: `構成のチェックの名前（check）「${String(raw.check)}」は使えません` };
+        }
+        if (!isObject(raw.params)) return { ok: false, message: 'チェックに使う値（params）を { } の形で書いてください' };
+        const bad = checkParamsError(raw.check, raw.params);
+        if (bad) return { ok: false, message: bad };
+        const m = compileMessages(raw.message);
+        if (!m.ok) return m;
+        check = raw.check;
+        messages = m.value;
+        params = Object.freeze({ ...raw.params });
+      } else {
+        if (!isNonEmptyString(raw.message)) return { ok: false, message: '指摘の文（message）が書かれていません' };
+        const c = compileCondition(raw.condition);
+        if (!c.ok) return c;
+        condition = c.value;
+      }
       documentTypes = raw.documentTypes;
     } else {
-      if (!Array.isArray(raw.patterns) || raw.patterns.length === 0) {
+      if (raw.documentTypes !== undefined) {
+        if (!isStringArray(raw.documentTypes)) return { ok: false, message: "対象の書類の種類（documentTypes）は ['annual'] の形で書いてください" };
+        documentTypes = raw.documentTypes;
+      }
+      if (raw.dynamicWords !== undefined) {
+        if (!(typeof raw.dynamicWords === 'string' && DYNAMIC_WORDS.includes(raw.dynamicWords))) {
+          return { ok: false, message: `入力から読み取る語（dynamicWords）「${String(raw.dynamicWords)}」は使えません` };
+        }
+        dynamicWords = raw.dynamicWords;
+      }
+      const list = Array.isArray(raw.patterns) ? raw.patterns : [];
+      // 入力から語を読み取るルール（自分の委員会名など）は、patterns が空でもよい
+      if (list.length === 0 && dynamicWords === '') {
         return { ok: false, message: '見つける語（patterns）が書かれていません' };
       }
-      for (const [i, p] of raw.patterns.entries()) {
+      for (const [i, p] of list.entries()) {
         const c = compilePattern(p, i);
         if (!c.ok) return c;
         patterns.push(c.value);
@@ -931,10 +1028,12 @@
         order,
         sectionSeverity: sectionSeverity.value,
         documentTypes,
+        dynamicWords,
         condition,
         message: isNonEmptyString(raw.message) ? raw.message : '',
         check,
         messages,
+        params,
       },
     };
   };
@@ -1491,6 +1590,7 @@
    *   区切り文字の位置）。改行を \n にそろえた文章での位置で、昇順に渡す。貼り付けた文章では使わない
    * @property {readonly Section[]} [sections]  認識できた欄の範囲（doccheck.js の analyzeDocument で作る）。
    *   欄に応じて重さを変えるルール（R-13 など）と、指摘の欄名の表示に使う。渡さなければ、どの箇所も「欄が分からない」として扱う
+   * @property {readonly string[]} [documentTypes]  書類の種類。書類の種類を決めているルール（documentTypes）は、ここに含まれるときだけ当てる
    */
 
   /**
@@ -1512,8 +1612,10 @@
     const phraseRanges = findPhraseRanges(text, ruleset.excludedPhrases);
     const excluded = [...findUrlRanges(text), ...phraseRanges];
 
+    // 書類の種類を決めているルール（documentTypes。委員会事業計画書の用語など）は、その種類を指定されたときだけ当てる
+    const allowedTypes = Array.isArray(options.documentTypes) ? options.documentTypes : [];
     const wordHits = ruleset.rules
-      .filter((r) => r.type === 'pattern')
+      .filter((r) => r.type === 'pattern' && (r.documentTypes.length === 0 || r.documentTypes.some((t) => allowedTypes.includes(t))))
       .flatMap((r) => findPatternHits(r, text, joined, excluded, breaks));
     const styleRule = ruleset.rules.find((r) => r.type === 'style');
     const style = styleRule ? analyzeStyle(text, styleRule, phraseRanges, breaks) : null;
@@ -1580,14 +1682,39 @@
       });
   };
 
+  /**
+   * 入力から読み取った語（自分の委員会名など）で探すルールだけを取り出し、その語を見つける語にしたルール定義を作る。
+   * 返したルール定義で checkText すると、そのルールの指摘だけが出る（語がなければルールは0件）
+   * @param {CompiledRuleset} ruleset
+   * @param {string} kind     DYNAMIC_WORDS のどれか
+   * @param {readonly string[]} words
+   * @returns {CompiledRuleset}
+   */
+  const withDynamicWords = (ruleset, kind, words) => {
+    const list = [...new Set(words.filter(isNonEmptyString))].sort((a, b) => b.length - a.length);
+    /** @type {CompiledRule[]} */
+    const rules = [];
+    if (list.length > 0) {
+      for (const r of ruleset.rules) {
+        if (r.type !== 'pattern' || r.dynamicWords !== kind) continue;
+        const p = compilePattern({ words: list, fix: r.fixes }, 0);
+        if (p.ok) rules.push({ ...r, patterns: [...r.patterns, p.value] });
+      }
+    }
+    return { ...ruleset, rules };
+  };
+
   const api = Object.freeze({
     SEVERITIES,
     MAX_CHARS,
     OTHER_SECTIONS,
     AMOUNT_CHECKS,
+    DOCUMENT_CHECKS,
+    DYNAMIC_WORDS,
     compileRuleset,
     checkText,
     checkDocumentRules,
+    withDynamicWords,
     normalizeLabel,
     labelKey,
     countChars,

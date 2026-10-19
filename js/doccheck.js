@@ -22,6 +22,7 @@
    * @property {string[]} settlementRequired
    * @property {string[]} blankCheck
    * @property {{ id: string, text: string, checkedBy?: string[] }[]} checkpoints
+   * @property {boolean} [useCommonCheckpoints]  共通の確認ポイントも出すか（既定 true）
    */
   /**
    * engine.js の CompiledDocuments
@@ -846,9 +847,12 @@
     /** @param {{ id: string, text: string, checkedBy?: string[] }[]} items */
     const withChecked = (items) =>
       items.map((k) => ({ id: k.id, text: k.text, checkedBy: (k.checkedBy ?? []).filter((id) => checkedRules.has(id)) }));
+    const selected = docs.types.filter((t) => selection.types.includes(t.id));
+    // 共通の確認ポイントは議案向け。委員会事業計画書だけを選んだときは出さない
+    const showCommon = selected.length === 0 || selected.some((t) => t.useCommonCheckpoints !== false);
     return [
-      { title: '共通', items: withChecked(docs.commonCheckpoints) },
-      ...docs.types.filter((t) => selection.types.includes(t.id)).map((t) => ({ title: t.name, items: withChecked(t.checkpoints) })),
+      ...(showCommon ? [{ title: '共通', items: withChecked(docs.commonCheckpoints) }] : []),
+      ...selected.map((t) => ({ title: t.name, items: withChecked(t.checkpoints) })),
     ].filter((grp) => grp.items.length > 0);
   };
 

@@ -186,7 +186,9 @@
    * @param {RulesetView} ruleset
    * @param {string} source
    */
-  const formatSource = (ruleset, source) => `${ruleset.meta.sourceLabel}${source}`;
+  const formatSource = (ruleset, source) =>
+    // 「【虎の巻（委員会事業計画版）】…」のように【】で始まる出典は、マニュアル以外の資料なのでそのまま出す
+    source.startsWith('【') ? source : `${ruleset.meta.sourceLabel}${source}`;
 
   /** @param {StyleCounts} c */
   const formatStyleCounts = (c) => `${c.politeLabel} ${c.polite}文／${c.plainLabel} ${c.plain}文`;
