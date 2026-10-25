@@ -155,7 +155,8 @@
   const annualApi = /** @type {{ committeeNames: (text: string, type: unknown) => string[],
    *   adjustFindings: (f: readonly Finding[], regions: readonly { start: number, end: number, typeIds: string[], hasScope: boolean }[], rs: unknown) => Finding[],
    *   bodyParagraphs: (text: string, sections: readonly { start: number, end: number, name: string }[], name: string) => { start: number, end: number, text: string }[],
-   *   layout: (paragraphs: readonly { text: string }[], params: Readonly<Record<string, unknown>>) => Layout|null,
+   *   layout: (paragraphs: readonly { text: string }[], params: Readonly<Record<string, unknown>>, totalMax?: number) => Layout|null,
+   *   totalMaxOf: (params: Readonly<Record<string, unknown>>) => number,
    *   structureFindings: (paragraphs: readonly { text: string }[], typeId: string, rs: unknown) => Finding[] }} */ (g.YegAnnual);
   const amountApi = /** @type {{ MESSAGES: Readonly<Record<string, unknown>>, readSheet: (sheet: unknown, data: unknown) => SheetRead,
    *   hasSettlementAmount: (t: unknown) => boolean, finalize: (t: unknown, kind: BudgetKind) => { ok: true, table: unknown } | { ok: false, reasons: string[] },
@@ -492,8 +493,9 @@
       const checks = ruleset.rules.filter((r) => r.type === 'document' && r.check !== '' && r.documentTypes.includes(grp.typeId));
       if (!t || checks.length === 0) continue;
       const lengthRule = checks.find((r) => r.check === 'length');
-      const sectionName =
-        lengthRule && typeof lengthRule.params.section === 'string' ? lengthRule.params.section : (t.scopeSections[0] ?? '');
+      const totalRule = checks.find((r) => r.check === 'total');
+      const sectionRule = [lengthRule, totalRule].find((r) => r && typeof r.params.section === 'string');
+      const sectionName = sectionRule ? String(sectionRule.params.section) : (t.scopeSections[0] ?? '');
       const part = grp.parts.find((p) => p.analysis.sections.some((s) => s.name === sectionName)) ?? grp.parts[0];
       const paragraphs = annualApi.bodyParagraphs(prep.text.slice(part.start, part.end), part.analysis.sections, sectionName);
       structureFindings.push(...annualApi.structureFindings(paragraphs, grp.typeId, ruleset));
@@ -501,7 +503,7 @@
         typeId: grp.typeId,
         typeName: t.name,
         committeeName: (namesByPart.get(part) ?? [])[0] ?? '',
-        layout: lengthRule ? annualApi.layout(paragraphs, lengthRule.params) : null,
+        layout: lengthRule ? annualApi.layout(paragraphs, lengthRule.params, totalRule ? annualApi.totalMaxOf(totalRule.params) : 0) : null,
       };
     }
 

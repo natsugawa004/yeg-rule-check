@@ -119,12 +119,14 @@
    * @property {string|null} fatal
    * @property {{ caution: string, request: string, links: { label: string, url: string }[] }} aiGuide
    * @property {{ types: { id: string, name: string }[] }|null} documents
+   * @property {{ name: string, href: string, keys: string[] }[]} otherPages
    */
 
   /**
    * @typedef {Object} EngineApi
    * @property {number} MAX_CHARS
    * @property {(raw: unknown) => Ruleset} compileRuleset
+   * @property {(text: string, ruleset: Ruleset) => { name: string, href: string }|null} otherPageFor
    * @property {(text: string, ruleset: Ruleset, options?: { breaks?: readonly number[], sections?: readonly { start: number, end: number, name: string }[] }) => OkResult | { ok: false, reason: 'empty'|'too-long', charCount: number }} checkText
    * @property {(text: string, ruleset: Ruleset, typeIds: readonly string[]) => Finding[]} checkDocumentRules
    * @property {(s: string) => number} countChars
@@ -262,12 +264,29 @@
     dropOverlay: el('drop-overlay'),
   };
 
+  /**
+   * 委員会事業計画書の専用ページ（annual.html。<body data-page="annual">）か。専用ページでは、
+   * 書類の種類を判別せずいつも委員会事業計画書として判定し、必須項目は確かめず、1ファイルずつ・Word と PDF だけを読み込む
+   */
+  const annualPage = document.body.dataset.page === 'annual';
+  const maxFiles = annualPage ? 1 : fileApi.MAX_FILES;
+
   const PASTE_BODY_NOTE =
     'チェックした文章です。印を押すと指摘の内容が出ます。直すときは上の入力欄で直して、もう一度「チェックする」を押してください。';
-  const FILE_BODY_NOTE =
-    'ファイルから読み込んだ文章です（ここでは直せません）。印を押すと指摘の内容が出ます。直す場合は元のファイル（Word・Excel）を修正して、もう一度読み込んでください。';
+  const FILE_BODY_NOTE = `ファイルから読み込んだ文章です（ここでは直せません）。印を押すと指摘の内容が出ます。直す場合は元のファイル（${
+    annualPage ? 'Word' : 'Word・Excel'
+  }）を修正して、もう一度読み込んでください。`;
 
-  const ruleset = engine.compileRuleset(g.YEG_RULESET);
+  const compiled = engine.compileRuleset(g.YEG_RULESET);
+  // 専用ページで委員会事業計画書のルール定義（rules_annual.js）が読めていないと、先に読んだ議案のルール定義が残る。
+  // 議案のルールで判定しないよう、ルール定義全体が読めなかったときと同じく止める
+  const ruleset =
+    annualPage && !compiled.fatal && !(compiled.documents && compiled.documents.types.some((t) => t.id === 'annual'))
+      ? {
+          ...compiled,
+          fatal: '委員会事業計画書のルール定義（rules/rules_annual.js）を読み込めませんでした。ページを再読み込みしてください。直らない場合は管理者に連絡してください。',
+        }
+      : compiled;
   const sampleText = typeof g.YEG_SAMPLE_TEXT === 'string' ? g.YEG_SAMPLE_TEXT : '';
   const narrowQuery = window.matchMedia('(max-width: 959.98px)');
 
@@ -469,6 +488,16 @@
     if (!model) return [];
     /** @param {{ id: string, text: string }[]} items */
     const points = (items) => h('ul', { className: 'points-list' }, items.map((k) => h('li', { text: `${k.id} ${k.text}` })));
+    if (annualPage) {
+      // 専用ページでは書類の種類を判別せず、必須項目も確かめないので、確認ポイントだけを出す
+      return [
+        h('h3', { className: 'rule-category', attrs: { id: 'rules-doc-title' }, text: '確認ポイント' }),
+        h('p', { text: '機械で判定できない項目です。チェックした後の「構成と字数」の欄で、確かめた項目に印を付けられます。' }),
+        ...model.types.map((t) =>
+          h('div', { className: 'rule-item', attrs: { 'data-doc-type': t.id } }, [h('h4', { text: t.name }), points(t.checkpoints)]),
+        ),
+      ];
+    }
     return [
       h('h3', { className: 'rule-category', attrs: { id: 'rules-doc-title' }, text: '書類の種類ごとの必須項目と確認ポイント' }),
       h('p', {
@@ -655,9 +684,17 @@
     const filterLabel = state.filter === 'all' ? '' : `${state.filter}だけ`;
     const amountLine = amountSummary(shown);
     const shownInList = report.filterBySeverity(shown, state.filter).length;
+    // 議案のページに、委員会事業計画書（専用のページで判定する書類）の文章が入ったときの案内
+    const other = !annualPage && state.prepared ? engine.otherPageFor(state.prepared.text, ruleset) : null;
 
     els.summary.replaceChildren(
       ...compact([
+      other
+        ? h('p', { className: 'summary-other-page', attrs: { id: 'summary-other-page' } }, [
+            `この文章は${other.name}のようです。委員会事業計画書は用語のルールが議案と違うため、専用のページで確かめてください（入力した文章は引き継がれないので、もう一度貼り付けてください）。 `,
+            h('a', { text: '専用のページを開く', attrs: { href: other.href } }),
+          ])
+        : null,
       ...(shown.length > 0
         ? [h('p', { className: 'summary-counts', attrs: { id: 'summary-counts' } }, countNodes)]
         : [
@@ -771,6 +808,19 @@
   const summaryDocNodes = () => {
     const doc = state.doc;
     if (!doc || !doc.evaluation.analysis.available) return [];
+    if (annualPage) {
+      // 専用ページでは書類の種類はいつも委員会事業計画書で、必須項目は確かめない
+      return [
+        h('p', { className: 'summary-line summary-doc-action' }, [
+          h('button', {
+            className: 'btn btn-small',
+            text: '構成と字数・確認ポイントを見る',
+            attrs: { type: 'button', id: 'btn-show-doc' },
+            onClick: showDocPane,
+          }),
+        ]),
+      ];
+    }
     const names = docCheck.typeNames(doc.selection, ruleset);
     const how = doc.selection.auto ? '自動で判別' : '手動で選択';
     const rep = doc.evaluation.report;
@@ -788,7 +838,7 @@
           });
     return compact([
       typeLine,
-      names.length > 0
+      names.length > 0 && rep.tables.length > 0
         ? h('p', {
             className: `summary-line summary-required${rep.shortage > 0 ? ' is-short' : ''}`,
             attrs: { id: 'summary-required' },
@@ -1145,7 +1195,8 @@
     const types = ruleset.documents ? ruleset.documents.types : [];
     const names = docCheck.typeNames(sel, ruleset);
 
-    const typeSection = h('section', { className: 'doc-block doc-types', attrs: { 'aria-labelledby': 'doc-types-title' } }, [
+    // 専用ページ（委員会事業計画書）では書類の種類を選ばない
+    const typeSection = annualPage ? null : h('section', { className: 'doc-block doc-types', attrs: { 'aria-labelledby': 'doc-types-title' } }, [
       h('h3', { className: 'doc-title', attrs: { id: 'doc-types-title' } }, [
         '書類の種類',
         h('span', { className: 'doc-how', text: sel.auto ? '（自動で判別）' : '（手動で選択）' }),
@@ -1256,7 +1307,7 @@
             className: 'doc-note',
             text: st.committeeName
               ? `委員会名: ${st.committeeName}（見出しから読み取り、本文で使っていれば「当委員会」と書くよう知らせます）`
-              : '委員会名: 見出しの「〇〇委員会　委員長名」の行が見つからないため、読み取れませんでした',
+              : '委員会名: 見出しの「〇〇委員会　委員長名」の行がないため、読み取っていません（本文で委員会名を使っていないかは確かめていません）',
           }),
           layoutRows.length > 0
             ? h('div', { className: 'req-table-wrap' }, [
@@ -1698,6 +1749,16 @@
    */
 
   /**
+   * 判定に使う書類の種類。専用ページ（委員会事業計画書）では判別せず、いつもルール定義にある種類にする
+   * @param {Prepared} prepared
+   * @returns {Selection}
+   */
+  const initialSelection = (prepared) =>
+    annualPage
+      ? { types: ruleset.documents ? ruleset.documents.types.map((t) => t.id) : [], budgetKind: '予算', auto: false }
+      : pipeline.autoSelection(prepared, ruleset);
+
+  /**
    * 「判定中」を画面に出してから判定し、結果を出す
    * @param {CheckJob} job
    */
@@ -1718,7 +1779,7 @@
           }
           const prev = state.doc;
           const selection =
-            job.keepSelection && prev && !prev.selection.auto ? prev.selection : pipeline.autoSelection(prepared, ruleset);
+            job.keepSelection && prev && !prev.selection.auto ? prev.selection : initialSelection(prepared);
           setState({
             result: prepared.result,
             checkedText: job.input.kind === 'paste' ? job.input.text : '',
@@ -1923,7 +1984,15 @@
     try {
       await nextPaint();
       const bytes = new Uint8Array(await file.arrayBuffer());
-      return await fileApi.loadFile({ name: file.name, bytes }, { readPdf: readPdfBytes });
+      const r = await fileApi.loadFile({ name: file.name, bytes }, { readPdf: readPdfBytes });
+      // 専用ページ（委員会事業計画書）は Word と PDF だけ。ドラッグで渡されたときは選ぶ画面の絞り込みが効かないので、ここで断る
+      if (annualPage && r.ok && r.doc.format === 'xlsx') {
+        return {
+          ok: false,
+          error: { code: 'unsupported', message: 'このページでは Excel は読み込めません。Word（.docx）・PDF にするか、文章を貼り付けてください。', detail: '' },
+        };
+      }
+      return r;
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       console.error(e);
@@ -1995,8 +2064,11 @@
       return;
     }
     const list = Array.from(files);
-    if (list.length > fileApi.MAX_FILES) {
-      showStatus(fileApi.TOO_MANY_FILES, 'error');
+    if (list.length > maxFiles) {
+      showStatus(
+        annualPage ? '1ファイルずつ読み込んでください（委員会事業計画書は1つずつ確かめます）。' : fileApi.TOO_MANY_FILES,
+        'error',
+      );
       return;
     }
     loadFiles(list).catch((e) => {
@@ -2133,7 +2205,8 @@
       now: new Date(),
       locate: placeOf,
       docLines: [
-        ...(doc && ev && ev.analysis.available ? docCheck.copyLines(doc.selection, ev.report, ruleset) : []),
+        // 専用ページ（委員会事業計画書）では書類の種類・必須項目の行を入れない
+        ...(doc && ev && ev.analysis.available && !annualPage ? docCheck.copyLines(doc.selection, ev.report, ruleset) : []),
         ...typeFileLines,
         ...(amountLine ? [amountLine] : []),
         ...(state.failed.length > 0 ? [`読み込めなかったファイル: ${state.failed.map((f) => f.name).join('、')}`] : []),

@@ -4,8 +4,8 @@
  *   committeeNames(文章, 種類) → 見出しの「〇〇委員会　委員長名」から読み取った自分の委員会名（読み仮名のかっこを外した形も）
  *   adjustFindings(指摘, 範囲, ルール) → 種類に応じて、判定する欄に絞り・当てないルールを外し・「違反」を「要確認」に下げる
  *   bodyParagraphs(文章, 欄, 欄の名前) → 本文の段落（見出しが見つからなければ全文）
- *   layout(段落, ルール) → 上段・中段・下段・合計の字数の表
- *   structureFindings(段落, 種類, ルール) → 構成のチェック（字数・書き出し・締め）の指摘（書類全体）
+ *   layout(段落, ルール, 合計の上限) → 上段・中段・下段・合計の字数の表
+ *   structureFindings(段落, 種類, ルール) → 構成のチェック（段ごとの字数・合計の字数・書き出し・締め）の指摘（書類全体）
  */
 'use strict';
 
@@ -183,13 +183,21 @@
     };
   };
 
+  /** 合計の字数の上限（check: 'total' のルールの params.max。書いていなければ 0） */
+  const totalMaxOf = (/** @type {Readonly<Record<string, unknown>>} */ params) =>
+    typeof params.max === 'number' && params.max > 0 ? params.max : 0;
+
+  /** 段落の字数の合計 */
+  const totalChars = (/** @type {readonly { text: string }[]} */ paragraphs) => paragraphs.reduce((a, x) => a + charsOf(x.text), 0);
+
   /**
    * 上段・中段・下段・合計の字数（段落が3つ以上なら、最初＝上段・最後＝下段・間＝中段）
    * @param {readonly { text: string }[]} paragraphs
    * @param {Readonly<Record<string, unknown>>} params  字数の目安（length のルールの params）
+   * @param {number} [totalMax]  合計の上限（total のルールの params.max）。0 より大きければ、合計の行はこれを超えたときだけ「多め」にする
    * @returns {Layout|null}
    */
-  const layout = (paragraphs, params) => {
+  const layout = (paragraphs, params, totalMax = 0) => {
     if (paragraphs.length === 0) return null;
     const p = layoutParams(params);
     /** @param {string} label @param {number} chars @param {number} target @returns {LayoutRow} */
@@ -199,7 +207,7 @@
       target,
       status: chars < target * p.low ? 'short' : chars > target * p.high ? 'long' : 'ok',
     });
-    const all = paragraphs.reduce((a, x) => a + charsOf(x.text), 0);
+    const all = totalChars(paragraphs);
     const split = paragraphs.length >= 3 && p.parts.length === 3;
     const rows = split
       ? [
@@ -208,7 +216,10 @@
           row(p.parts[2].label, charsOf(paragraphs[paragraphs.length - 1].text), p.parts[2].target),
         ]
       : [];
-    return { split, rows, total: row('合計', all, p.total) };
+    /** @type {LayoutRow} */
+    const total =
+      totalMax > 0 ? { label: '合計', chars: all, target: totalMax, status: all > totalMax ? 'long' : 'ok' } : row('合計', all, p.total);
+    return { split, rows, total };
   };
 
   /** 指摘の文の {名前} を埋める */
@@ -258,13 +269,18 @@
     for (const r of rules) {
       const message = r.messages.default ?? '';
       if (r.check === 'length') {
+        // 段ごとの字数（段落が3つ未満で段に分けられないときは見ない。合計は check: 'total' のルールで見る）
         const lay = layout(paragraphs, r.params);
-        if (!lay) continue;
-        for (const x of lay.split ? lay.rows : [lay.total]) {
+        if (!lay || !lay.split) continue;
+        for (const x of lay.rows) {
           if (x.status === 'ok') continue;
           const how = x.status === 'short' ? '少なめ' : '多め';
           add(r, fill(message, { label: x.label, chars: x.chars, target: x.target, how }), x.label);
         }
+      } else if (r.check === 'total') {
+        const max = totalMaxOf(r.params);
+        const chars = totalChars(paragraphs);
+        if (max > 0 && chars > max) add(r, fill(message, { chars, max }), 'total');
       } else if (r.check === 'opening') {
         if (paragraphs.length < 3) continue;
         const opening = typeof r.params.opening === 'string' ? r.params.opening : '';
@@ -286,6 +302,7 @@
     adjustFindings,
     bodyParagraphs,
     layout,
+    totalMaxOf,
     structureFindings,
     charsOf,
   });

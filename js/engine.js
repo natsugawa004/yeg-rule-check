@@ -178,12 +178,20 @@
    */
 
   /**
+   * @typedef {Object} OtherPage
+   * @property {string} name    書類の名前（例: 委員会事業計画書）
+   * @property {string} href    ページ（例: annual.html）
+   * @property {string[]} keys  判別語（labelKey でそろえた形）
+   */
+
+  /**
    * @typedef {Object} CompiledRuleset
    * @property {RulesetMeta} meta
    * @property {string[]} categories
    * @property {string[]} excludedPhrases
    * @property {string[]} notChecked
    * @property {AiGuide} aiGuide
+   * @property {OtherPage[]} otherPages  別のページで判定する書類（議案のページで案内する）
    * @property {CompiledRule[]} rules
    * @property {CompiledDocuments|null} documents  書類の種類のデータ（読めなかったときは null）
    * @property {CompiledAmounts|null} amounts      金額チェックのデータ（読めなかったときは null）
@@ -608,7 +616,7 @@
   ]);
 
   /** 書類全体の構成のチェックの名前（type: 'document' で condition の代わりに check に書けるもの。判定は annual.js） */
-  const DOCUMENT_CHECKS = Object.freeze(['length', 'opening', 'closing']);
+  const DOCUMENT_CHECKS = Object.freeze(['length', 'total', 'opening', 'closing']);
 
   /** 入力から読み取る語の名前（type: 'pattern' の dynamicWords に書けるもの） */
   const DYNAMIC_WORDS = Object.freeze(['committeeName']);
@@ -632,6 +640,9 @@
         const v = params[key];
         if (v !== undefined && !(typeof v === 'number' && v > 0)) return `params.${key} は 0 より大きい数で書いてください`;
       }
+    }
+    if (check === 'total' && !(typeof params.max === 'number' && params.max > 0)) {
+      return 'params.max（合計の字数の上限）は 0 より大きい数で書いてください';
     }
     if (check === 'opening' && !isNonEmptyString(params.opening)) return "params.opening（中段の書き出し）は '…' の形で書いてください";
     if (check === 'closing' && !(isStringArray(params.closings) && params.closings.some(isNonEmptyString))) {
@@ -1065,6 +1076,38 @@
   };
 
   /**
+   * 別のページで判定する書類（議案のページで、委員会事業計画書の文章が入ったときに案内する）。
+   * 書き方の違う項目は読み飛ばす。リンク先は同じサイトの中のページ（例: annual.html）だけ
+   * @param {unknown} raw
+   * @returns {OtherPage[]}
+   */
+  const readOtherPages = (raw) =>
+    Array.isArray(raw)
+      ? raw.flatMap((p) =>
+          isObject(p) &&
+          isNonEmptyString(p.name) &&
+          typeof p.href === 'string' &&
+          /^[\w-]+\.html$/.test(p.href) &&
+          isStringArray(p.detectWords) &&
+          p.detectWords.some(isNonEmptyString)
+            ? [{ name: p.name, href: p.href, keys: p.detectWords.map(labelKey).filter((k) => k !== '') }]
+            : [],
+        )
+      : [];
+
+  /**
+   * 文章が、別のページで判定する書類のものらしいとき、そのページ（判別語が1つでもあれば）
+   * @param {string} text
+   * @param {{ otherPages: readonly OtherPage[] }} ruleset
+   * @returns {OtherPage|null}
+   */
+  const otherPageFor = (text, ruleset) => {
+    if (ruleset.otherPages.length === 0) return null;
+    const key = labelKey(text);
+    return ruleset.otherPages.find((p) => p.keys.some((k) => key.includes(k))) ?? null;
+  };
+
+  /**
    * ルール定義を読み込む。1件のルールの書き方が間違っていても、そのルールだけを飛ばす
    * @param {unknown} raw
    * @returns {CompiledRuleset}
@@ -1084,6 +1127,7 @@
       excludedPhrases: [],
       notChecked: [],
       aiGuide: readAiGuide(undefined),
+      otherPages: [],
       rules: [],
       documents: null,
       amounts: null,
@@ -1094,7 +1138,7 @@
     if (!isObject(raw) || !Array.isArray(raw.rules)) {
       return {
         ...base,
-        fatal: 'ルール定義（rules/rules.js）を読み込めませんでした。ファイルの書き方を確認してください。',
+        fatal: 'ルール定義（rules/rules.js・rules/rules_annual.js）を読み込めませんでした。ファイルの書き方を確認してください。',
       };
     }
 
@@ -1159,6 +1203,7 @@
       excludedPhrases: isStringArray(raw.excludedPhrases) ? raw.excludedPhrases : [],
       notChecked: isStringArray(raw.notChecked) ? raw.notChecked : [],
       aiGuide: readAiGuide(raw.aiGuide),
+      otherPages: readOtherPages(raw.otherPages),
       rules,
       documents,
       amounts: amt && amt.ok ? amt.value : null,
@@ -1715,6 +1760,7 @@
     checkText,
     checkDocumentRules,
     withDynamicWords,
+    otherPageFor,
     normalizeLabel,
     labelKey,
     countChars,

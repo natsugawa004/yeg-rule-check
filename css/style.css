@@ -101,6 +101,40 @@ body {
 .header-actions,
 .bottom-actions {
   margin: 8px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+}
+
+/* 委員会事業計画書のページの見出しの添え書き */
+.site-subtitle {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  background: var(--c-primary);
+  color: #fff;
+  font-size: 0.8em;
+  vertical-align: 2px;
+}
+
+/* 議案のページと委員会事業計画書のページを行き来するリンク */
+.page-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  color: var(--c-primary);
+}
+
+/* 議案のページに委員会事業計画書の文章が入ったときの案内 */
+.summary-other-page {
+  margin: 8px 0 0;
+  border: 1px solid var(--c-check);
+  border-left-width: 4px;
+  background: var(--c-check-bg);
+  border-radius: var(--radius);
+  padding: 6px 10px;
 }
 
 .rule-errors {

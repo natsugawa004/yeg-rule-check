@@ -766,8 +766,9 @@
       return occ.length > cells.length ? 'present' : 'blank';
     };
 
+    // 必須項目を決めていない種類（委員会事業計画書）は表を作らない
     const tables = docs.types
-      .filter((t) => selection.types.includes(t.id))
+      .filter((t) => selection.types.includes(t.id) && t.required.length + t.settlementRequired.length > 0)
       .map((t) => {
         const a = analysisFor(t.id);
         const names = [
@@ -876,7 +877,7 @@
       .map((r) => `${r.name}（${r.label}）`);
     return [
       `書類の種類: ${names.join('／')}（${how}）`,
-      `${requiredSummary(rep)}${lacking.length > 0 ? `: ${[...new Set(lacking)].join('、')}` : ''}`,
+      ...(rep.tables.length > 0 ? [`${requiredSummary(rep)}${lacking.length > 0 ? `: ${[...new Set(lacking)].join('、')}` : ''}`] : []),
     ];
   };
 
